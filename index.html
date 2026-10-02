@@ -1313,6 +1313,7 @@
 
         let selectedLeaveCategory = "";
         let selectedFileName = "";
+        let selectedFile = null;
 
         // ==================== [เชื่อมต่อ Google Sheets ผ่าน Apps Script] ====================
         // *** วาง "ลิงก์ exec" ของ Apps Script คุณตรงนี้บรรทัดเดียวเท่านั้น ***
@@ -1339,6 +1340,51 @@
                     if (successCb) successCb(res.data);
                 })
                 .catch(err => showToast("เชื่อมต่อ Google Sheets ไม่สำเร็จ: " + err.message, "error"));
+        }
+
+
+        // ==================== [อัปโหลดไฟล์หลักฐานเข้า Google Drive แยกโฟลเดอร์ ม.1-ม.6] ====================
+        function fileToUploadPayload_(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onerror = () => reject(new Error("อ่านไฟล์ไม่สำเร็จ"));
+                reader.onload = () => {
+                    if (!file.type.startsWith("image/")) {            // PDF ฯลฯ ส่งตามเดิม
+                        resolve({ base64: reader.result.split(",")[1], mimeType: file.type || "application/octet-stream" });
+                        return;
+                    }
+                    const img = new Image();                          // รูปภาพ: ย่อให้ไม่เกิน 1600px เพื่อส่งเร็วและประหยัดพื้นที่ Drive
+                    img.onerror = () => reject(new Error("เปิดรูปไม่สำเร็จ"));
+                    img.onload = () => {
+                        const MAX = 1600, s = Math.min(1, MAX / Math.max(img.width, img.height));
+                        const c = document.createElement("canvas");
+                        c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
+                        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+                        resolve({ base64: c.toDataURL("image/jpeg", 0.82).split(",")[1], mimeType: "image/jpeg" });
+                    };
+                    img.src = reader.result;
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+
+        function uploadAttachment_(file, req) {
+            if (!hasServer) return;
+            showToast("กำลังอัปโหลดไฟล์หลักฐานเข้า Google Drive...", "success");
+            fileToUploadPayload_(file).then(p => fetch(APPS_SCRIPT_URL, {
+                method: "POST",
+                body: JSON.stringify({            // ไม่ตั้ง header เพื่อเลี่ยง CORS preflight ของ Apps Script
+                    action: "uploadAttachment",
+                    leaveId: req.id, studentId: req.studentId, studentName: req.studentName,
+                    studentClass: req.studentClass, submitDate: req.submitDate,
+                    fileName: file.name, mimeType: p.mimeType, base64: p.base64
+                })
+            })).then(r => r.json()).then(res => {
+                if (!res.ok) throw new Error(res.error);
+                req.attachmentUrl = res.data.url;
+                showToast("อัปโหลดไฟล์หลักฐานเข้า Drive เรียบร้อย", "success");
+                renderData();
+            }).catch(err => showToast("อัปโหลดไฟล์ไม่สำเร็จ: " + err.message, "error"));
         }
 
         // โหลดข้อมูลจริงจาก Google Sheets ตอนเปิดหน้าเว็บ (แทนที่ข้อมูลตัวอย่างในเครื่อง)
@@ -1651,6 +1697,7 @@
             const label = document.getElementById('file-upload-label');
             if (file) {
                 selectedFileName = file.name;
+                selectedFile = file;
                 label.innerText = `แนบไฟล์สำเร็จ: ${file.name}`;
                 label.className = "text-xs font-bold text-sky-600 animate-pulse";
             }
@@ -1710,6 +1757,7 @@
                 submitDate: submitDateStr
             };
 
+            const fileToUpload = selectedFile;
             leaveRequests.unshift(newRequest);
             showToast(`ส่งใบลาเรียนของ ${currentUser.name} เรียบร้อยแล้ว`, "success");
 
@@ -1719,6 +1767,7 @@
                     newRequest.id = result.id;
                     renderData();
                 }
+                if (fileToUpload) uploadAttachment_(fileToUpload, newRequest);
             }, newRequest);
 
             // รีเซ็ตค่าตัวเลือก
@@ -1737,6 +1786,7 @@
             
             selectedLeaveCategory = "";
             selectedFileName = "";
+            selectedFile = null;
             document.getElementById('file-upload-label').innerText = "คลิกหรือลากไฟล์ภาพใบรับรองแพทย์ / ใบขออนุญาตมาวาง";
             document.getElementById('file-upload-label').className = "text-xs text-slate-500";
             selectLeaveType('');
@@ -2021,7 +2071,7 @@
                         <td class="px-4 py-3.5 min-w-[150px] text-xs text-slate-600 max-w-xs truncate" title="${req.reason}">${req.reason}</td>
                         <td class="px-4 py-3.5">${commentBubble}</td>
                         <td class="px-4 py-3.5 whitespace-nowrap text-xs">
-                            ${req.attachmentName ? `<button onclick="openDocumentModal('${req.attachmentName}')" class="text-sky-600 hover:text-sky-800 font-semibold flex items-center gap-1"><i class="fa-solid fa-paperclip"></i> มีไฟล์</button>` : `<span class="text-slate-400">-</span>`}
+                            ${req.attachmentName ? `<button onclick="openDocumentModal('${req.attachmentName}','${req.attachmentUrl || ''}')" class="text-sky-600 hover:text-sky-800 font-semibold flex items-center gap-1"><i class="fa-solid fa-paperclip"></i> มีไฟล์</button>` : `<span class="text-slate-400">-</span>`}
                         </td>
                         <td class="px-4 py-3.5 whitespace-nowrap">
                             <span class="px-2.5 py-1 rounded-full text-xs font-semibold ${statusBadge} inline-flex items-center gap-1">
@@ -2108,7 +2158,7 @@
                                     <p><strong>เหตุผลความจำเป็น:</strong> ${req.reason}</p>
                                     ${req.attachmentName ? `
                                         <div class="pt-2 border-t border-slate-100 flex items-center">
-                                            <button onclick="openDocumentModal('${req.attachmentName}')" class="text-[11px] font-bold text-sky-600 hover:text-sky-800 hover:underline flex items-center gap-1.5">
+                                            <button onclick="openDocumentModal('${req.attachmentName}','${req.attachmentUrl || ''}')" class="text-[11px] font-bold text-sky-600 hover:text-sky-800 hover:underline flex items-center gap-1.5">
                                                 <i class="fa-solid fa-paperclip"></i> แนบไฟล์: ${req.attachmentName} (คลิกดูภาพหลักฐาน)
                                             </button>
                                         </div>
@@ -2627,7 +2677,8 @@
         // ==================== [ฟังก์ชันดั้งเดิมที่จำเป็น] ====================
 
         // ฟังก์ชันเปิด Modal เพื่อพรีวิวเอกสารหลักฐาน
-        function openDocumentModal(fileName) {
+        function openDocumentModal(fileName, url) {
+            if (url) { window.open(url, "_blank", "noopener"); return; }
             const modalFileName = document.getElementById('modal-file-name');
             if (modalFileName) {
                 modalFileName.innerText = fileName || "ใบรับรองแพทย์ตรวจโรคทั่วไป.jpg";
